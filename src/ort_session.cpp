@@ -200,27 +200,91 @@ Variant OnnxSession::run(Variant input)
 	return Variant();
 }
 
-Vector<PackedFloat32Array> OnnxSession::_run_internal(Vector<PackedFloat32Array> &inputs)
-{
-	const size_t num_input_nodes = m_model->num_inputs;
-	ERR_FAIL_COND_V_MSG(inputs.size() != num_input_nodes, Vector<PackedFloat32Array>(), "Wrong number of inputs for OnnxSession run");
-	std::vector<Ort::Value> in_tensors;
+// Vector<PackedFloat32Array> OnnxSession::_run_internal(Vector<PackedFloat32Array> &inputs)
+// {
+// 	const size_t num_input_nodes = m_model->num_inputs;
+// 	ERR_FAIL_COND_V_MSG(inputs.size() != num_input_nodes, Vector<PackedFloat32Array>(), "Wrong number of inputs for OnnxSession run");
+// 	std::vector<Ort::Value> in_tensors;
 
-	for (size_t idx = 0; idx < num_input_nodes; idx++)
-	{
-		auto tensor_info = m_model->input_infos[idx];
-		auto input_node_dims = tensor_info.GetShape();
-		auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-		auto element_count = tensor_info.GetElementCount();
+// 	for (size_t idx = 0; idx < num_input_nodes; idx++)
+// 	{
+// 		auto tensor_info = m_model->input_infos[idx];
+// 		auto input_node_dims = tensor_info.GetShape();
+// 		auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+// 		auto element_count = tensor_info.GetElementCount();
 
-		auto input = inputs[idx];
-		ERR_FAIL_COND_V_MSG(input.size() != element_count, Vector<PackedFloat32Array>(), vformat("Input has incorrect size in OnnxSession.run %d, expected %d", input.size(), element_count));
+// 		auto input = inputs[idx];
+// 		ERR_FAIL_COND_V_MSG(input.size() != element_count, Vector<PackedFloat32Array>(), vformat("Input has incorrect size in OnnxSession.run %d, expected %d", input.size(), element_count));
 
-		Ort::Value input_tensor = Ort::Value::CreateTensor<float>(memory_info, input.ptrw(), element_count,
-																  input_node_dims.data(), input_node_dims.size());
-		assert(input_tensor.IsTensor());
-		in_tensors.push_back(std::move(input_tensor));
-	}
+// 		Ort::Value input_tensor = Ort::Value::CreateTensor<float>(memory_info, input.ptrw(), element_count,
+// 																  input_node_dims.data(), input_node_dims.size());
+// 		assert(input_tensor.IsTensor());
+// 		in_tensors.push_back(std::move(input_tensor));
+// 	}
+
+// 	const size_t num_output_nodes = m_model->num_outputs;
+// 	std::vector<const char *> output_node_names;
+// 	// this second vector is used because otherwise output_name will be deallocated
+// 	// at end of loop iteration below, whereas we want it deallocated after calling session.Run
+// 	auto run_options = Ort::RunOptions();
+// 	auto output_tensors =
+// 		m_model->session->Run(run_options, m_model->input_names.data(), in_tensors.data(), in_tensors.size(), m_model->output_names.data(), m_model->output_names.size());
+// 	assert(output_tensors.size() == num_output_nodes && output_tensors.front().IsTensor());
+
+// 	Vector<PackedFloat32Array> out_vals;
+// 	for (auto it = output_tensors.begin(); it != output_tensors.end(); ++it)
+// 	{
+// 		Ort::Value &out_tensor = *it;
+// 		auto tensorShape = out_tensor.GetTensorTypeAndShapeInfo();
+// 		size_t count = tensorShape.GetElementCount();
+// 		float *floatarr = out_tensor.GetTensorMutableData<float>();
+// 		PackedFloat32Array new_array;
+// 		new_array.resize(count);
+// 		memcpy(new_array.ptrw(), floatarr, sizeof(float) * count);
+// 		out_vals.push_back(new_array);
+// 	}
+// 	return out_vals;
+// }
+
+Vector<PackedFloat32Array> OnnxSession::_run_internal(Vector<PackedFloat32Array> &inputs) {
+    const size_t num_input_nodes = m_model->num_inputs;
+    ERR_FAIL_COND_V_MSG(inputs.size() != num_input_nodes, Vector<PackedFloat32Array>(),
+        "Wrong number of inputs for OnnxSession run");
+
+    std::vector<Ort::Value> in_tensors;
+
+    for (size_t idx = 0; idx < num_input_nodes; idx++) {
+        auto tensor_info     = m_model->input_infos[idx];
+        auto input_node_dims = tensor_info.GetShape();  // e.g. [-1, 87] or [-1]
+        auto memory_info     = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        auto input           = inputs[idx];
+        size_t actual_count  = (size_t)input.size();
+
+        // Replace dynamic dims (-1) with 1 (batch size always 1).
+        std::vector<int64_t> concrete_dims = input_node_dims;
+        for (auto &dim : concrete_dims) {
+            if (dim < 0) dim = 1;
+        }
+
+        // If after clamping the product doesn't match the input size,
+        // the model was exported with a flat [-1] shape — just use [1, actual_count].
+        size_t dim_product = 1;
+        for (auto d : concrete_dims) dim_product *= (size_t)d;
+
+        if (dim_product != actual_count) {
+            concrete_dims = { 1, (int64_t)actual_count };
+        }
+
+        Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+            memory_info,
+            input.ptrw(),
+            actual_count,
+            concrete_dims.data(),
+            concrete_dims.size());
+
+        assert(input_tensor.IsTensor());
+        in_tensors.push_back(std::move(input_tensor));
+    }
 
 	const size_t num_output_nodes = m_model->num_outputs;
 	std::vector<const char *> output_node_names;
